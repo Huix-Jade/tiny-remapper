@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016, 2018, Player, asie
- * Copyright (c) 2016, 2023, FabricMC
+ * Copyright (c) 2016, 2022, FabricMC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -19,7 +19,9 @@
 package net.fabricmc.tinyremapper;
 
 import java.io.IOException;
+import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.FileSystem;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -97,11 +99,6 @@ public class TinyRemapper {
 
 		public Builder withForcedPropagation(Set<String> entries) {
 			forcePropagation.addAll(entries);
-			return this;
-		}
-
-		public Builder withKnownIndyBsm(Set<String> entries) {
-			knownIndyBsm.addAll(entries);
 			return this;
 		}
 
@@ -218,7 +215,7 @@ public class TinyRemapper {
 		public TinyRemapper build() {
 			TinyRemapper remapper = new TinyRemapper(mappingProviders, ignoreFieldDesc, threadCount,
 					keepInputData,
-					forcePropagation, knownIndyBsm, propagatePrivate,
+					forcePropagation, propagatePrivate,
 					propagateBridges, propagateRecordComponents,
 					removeFrames, ignoreConflicts, resolveMissing, checkPackageAccess || fixPackageAccess, fixPackageAccess,
 					rebuildSourceFilenames, skipLocalMapping, renameInvalidLocals, invalidLvNamePattern, inferNameFromSameLvIndex,
@@ -232,7 +229,6 @@ public class TinyRemapper {
 		private boolean ignoreFieldDesc;
 		private int threadCount;
 		private final Set<String> forcePropagation = new HashSet<>();
-		private final Set<String> knownIndyBsm = new HashSet<>();
 		private boolean keepInputData = false;
 		private boolean propagatePrivate = false;
 		private LinkedMethodPropagation propagateBridges = LinkedMethodPropagation.DISABLED;
@@ -259,23 +255,7 @@ public class TinyRemapper {
 	}
 
 	public interface AnalyzeVisitorProvider {
-		/**
-		 * @deprecated use {@link #insertAnalyzeVisitor(boolean, int, String, ClassVisitor, InputTag[])} instead
-		 */
-		@Deprecated
 		ClassVisitor insertAnalyzeVisitor(int mrjVersion, String className, ClassVisitor next);
-
-		/**
-		 * @deprecated use {@link #insertAnalyzeVisitor(boolean, int, String, ClassVisitor, InputTag[])} instead
-		 */
-		@Deprecated
-		default ClassVisitor insertAnalyzeVisitor(int mrjVersion, String className, ClassVisitor next, /* @Nullable */ InputTag[] inputTags) {
-			return insertAnalyzeVisitor(mrjVersion, className, next);
-		}
-
-		default ClassVisitor insertAnalyzeVisitor(boolean isInput, int mrjVersion, String className, ClassVisitor next, /* @Nullable */ InputTag[] inputTags) {
-			return insertAnalyzeVisitor(mrjVersion, className, next, inputTags);
-		}
 	}
 
 	public interface StateProcessor {
@@ -284,16 +264,12 @@ public class TinyRemapper {
 
 	public interface ApplyVisitorProvider {
 		ClassVisitor insertApplyVisitor(TrClass cls, ClassVisitor next);
-
-		default ClassVisitor insertApplyVisitor(TrClass cls, ClassVisitor next, /* @Nullable */ InputTag[] inputTags) {
-			return insertApplyVisitor(cls, next);
-		}
 	}
 
 	private TinyRemapper(Collection<IMappingProvider> mappingProviders, boolean ignoreFieldDesc,
 			int threadCount,
 			boolean keepInputData,
-			Set<String> forcePropagation, Set<String> knownIndyBsm, boolean propagatePrivate,
+			Set<String> forcePropagation, boolean propagatePrivate,
 			LinkedMethodPropagation propagateBridges, LinkedMethodPropagation propagateRecordComponents,
 			boolean removeFrames,
 			boolean ignoreConflicts,
@@ -312,7 +288,6 @@ public class TinyRemapper {
 		this.keepInputData = keepInputData;
 		this.threadPool = Executors.newFixedThreadPool(this.threadCount);
 		this.forcePropagation = forcePropagation;
-		this.knownIndyBsm = knownIndyBsm;
 		this.propagatePrivate = propagatePrivate;
 		this.propagateBridges = propagateBridges;
 		this.propagateRecordComponents = propagateRecordComponents;
@@ -331,9 +306,6 @@ public class TinyRemapper {
 		this.preApplyVisitors = preApplyVisitors;
 		this.postApplyVisitors = postApplyVisitors;
 		this.extraRemapper = extraRemapper;
-
-		this.knownIndyBsm.add("java/lang/invoke/StringConcatFactory");
-		this.knownIndyBsm.add("java/lang/runtime/ObjectMethods");
 	}
 
 	public static Builder newRemapper() {
@@ -413,7 +385,7 @@ public class TinyRemapper {
 	private CompletableFuture<List<ClassInstance>> read(Path[] inputs, boolean isInput, InputTag tag) {
 		InputTag[] tags = singleInputTags.get().get(tag);
 		List<CompletableFuture<List<ClassInstance>>> futures = new ArrayList<>();
-		List<FileSystemReference> fsToClose = Collections.synchronizedList(new ArrayList<>());
+		List<FileSystem> fsToClose = Collections.synchronizedList(new ArrayList<>());
 
 		for (Path input : inputs) {
 			futures.addAll(read(input, isInput, tags, true, fsToClose));
@@ -439,9 +411,9 @@ public class TinyRemapper {
 		}
 
 		return ret.whenComplete((res, exc) -> {
-			for (FileSystemReference fs : fsToClose) {
+			for (FileSystem fs : fsToClose) {
 				try {
-					fs.close();
+					FileSystemHandler.close(fs);
 				} catch (IOException e) {
 					// ignore
 				}
@@ -493,7 +465,7 @@ public class TinyRemapper {
 	}
 
 	private List<CompletableFuture<List<ClassInstance>>> read(final Path file, boolean isInput, InputTag[] tags,
-			boolean saveData, final List<FileSystemReference> fsToClose) {
+			boolean saveData, final List<FileSystem> fsToClose) {
 		try {
 			return read(file, isInput, tags, file, saveData, fsToClose);
 		} catch (IOException e) {
@@ -502,7 +474,7 @@ public class TinyRemapper {
 	}
 
 	private List<CompletableFuture<List<ClassInstance>>> read(final Path file, boolean isInput, InputTag[] tags, final Path srcPath,
-			final boolean saveData, final List<FileSystemReference> fsToClose) throws IOException {
+			final boolean saveData, final List<FileSystem> fsToClose) throws IOException {
 		List<CompletableFuture<List<ClassInstance>>> ret = new ArrayList<>();
 
 		Files.walkFileTree(file, new SimpleFileVisitor<Path>() {
@@ -535,14 +507,15 @@ public class TinyRemapper {
 	}
 
 	private List<ClassInstance> readFile(Path file, boolean isInput, InputTag[] tags, final Path srcPath,
-			List<FileSystemReference> fsToClose) throws IOException, URISyntaxException {
+			List<FileSystem> fsToClose) throws IOException, URISyntaxException {
 		List<ClassInstance> ret = new ArrayList<ClassInstance>();
 
 		if (file.toString().endsWith(".class")) {
 			ClassInstance res = analyze(isInput, tags, srcPath, file);
 			if (res != null) ret.add(res);
 		} else {
-			FileSystemReference fs = FileSystemReference.openJar(file);
+			URI uri = new URI("jar:"+file.toUri().toString());
+			FileSystem fs = FileSystemHandler.open(uri);
 			fsToClose.add(fs);
 
 			Files.walkFileTree(fs.getPath("/"), new SimpleFileVisitor<Path>() {
@@ -605,15 +578,18 @@ public class TinyRemapper {
 
 		if ((reader.getAccess() & Opcodes.ACC_MODULE) != 0) return null; // special attribute for module-info.class, can't be a regular class
 
-		final String name = reader.getClassName();
-		final int mrjVersion = analyzeMrjVersion(file, name);
-
 		final ClassInstance ret = new ClassInstance(this, isInput, tags, srcPath, isInput ? data : null);
 
-		ClassVisitor cv = new ClassVisitor(Opcodes.ASM9) {
+		reader.accept(new ClassVisitor(Opcodes.ASM9) {
 			@Override
 			public void visit(int version, int access, String name, String signature, String superName, String[] interfaces) {
+				int mrjVersion = analyzeMrjVersion(file, name);
 				ret.init(name, version, mrjVersion, signature, superName, access, interfaces);
+
+				for (int i = analyzeVisitors.size() - 1; i >= 0; i--) {
+					cv = analyzeVisitors.get(i).insertAnalyzeVisitor(mrjVersion, name, cv);
+				}
+
 				super.visit(version, access, name, signature, superName, interfaces);
 			}
 
@@ -632,13 +608,7 @@ public class TinyRemapper {
 
 				return super.visitField(access, name, desc, signature, value);
 			}
-		};
-
-		for (int i = analyzeVisitors.size() - 1; i >= 0; i--) {
-			cv = analyzeVisitors.get(i).insertAnalyzeVisitor(isInput, mrjVersion, name, cv, tags);
-		}
-
-		reader.accept(cv, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES | ClassReader.SKIP_CODE);
+		}, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES | ClassReader.SKIP_CODE);
 
 		return ret;
 	}
@@ -1094,14 +1064,14 @@ public class TinyRemapper {
 		}
 
 		for (int i = postApplyVisitors.size() - 1; i >= 0; i--) {
-			visitor = postApplyVisitors.get(i).insertApplyVisitor(cls, visitor, cls.getInputTags());
+			visitor = postApplyVisitors.get(i).insertApplyVisitor(cls, visitor);
 		}
 
 		visitor = new AsmClassRemapper(visitor, cls.getContext().remapper, rebuildSourceFilenames,
 				checkPackageAccess, skipLocalMapping, renameInvalidLocals, invalidLvNamePattern, inferNameFromSameLvIndex);
 
 		for (int i = preApplyVisitors.size() - 1; i >= 0; i--) {
-			visitor = preApplyVisitors.get(i).insertApplyVisitor(cls, visitor, cls.getInputTags());
+			visitor = preApplyVisitors.get(i).insertApplyVisitor(cls, visitor);
 		}
 
 		reader.accept(visitor, flags);
@@ -1341,7 +1311,6 @@ public class TinyRemapper {
 
 	private final boolean keepInputData;
 	final Set<String> forcePropagation;
-	final Set<String> knownIndyBsm;
 	final boolean propagatePrivate;
 	final LinkedMethodPropagation propagateBridges;
 	final LinkedMethodPropagation propagateRecordComponents;

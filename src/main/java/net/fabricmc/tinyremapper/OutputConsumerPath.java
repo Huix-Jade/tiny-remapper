@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016, 2018, Player, asie
- * Copyright (c) 2016, 2022, FabricMC
+ * Copyright (c) 2016, 2021, FabricMC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -24,7 +24,10 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -32,8 +35,10 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
@@ -50,11 +55,8 @@ public class OutputConsumerPath implements BiConsumer<String, byte[]>, Closeable
 			return this;
 		}
 
-		/**
-		 * @deprecated no longer implemented, no-op
-		 */
-		@Deprecated
 		public Builder keepFsOpen(boolean value) {
+			this.keepFsOpen = value;
 			return this;
 		}
 
@@ -71,11 +73,12 @@ public class OutputConsumerPath implements BiConsumer<String, byte[]>, Closeable
 		public OutputConsumerPath build() throws IOException {
 			boolean isJar = assumeArchive == null || Files.exists(destination) ? isJar(destination) : assumeArchive;
 
-			return new OutputConsumerPath(destination, isJar, threadSyncWrites, classNameFilter);
+			return new OutputConsumerPath(destination, isJar, keepFsOpen, threadSyncWrites, classNameFilter);
 		}
 
 		private final Path destination;
 		private Boolean assumeArchive;
+		private boolean keepFsOpen = false;
 		private boolean threadSyncWrites = false;
 		private Predicate<String> classNameFilter;
 	}
@@ -87,24 +90,34 @@ public class OutputConsumerPath implements BiConsumer<String, byte[]>, Closeable
 
 	@Deprecated
 	public OutputConsumerPath(Path dstDir, boolean closeFs) throws IOException {
-		this(dstDir, isJar(dstDir), false, null);
+		this(dstDir, isJar(dstDir), !closeFs, false, null);
 	}
 
-	private OutputConsumerPath(Path destination, boolean isJar, boolean threadSyncWrites,
+	private OutputConsumerPath(Path destination, boolean isJar, boolean keepFsOpen, boolean threadSyncWrites,
 			Predicate<String> classNameFilter) throws IOException {
 		if (!isJar) { // TODO: implement .class output (for processing a single class file)
 			Files.createDirectories(destination);
-			fsToClose = null;
 		} else {
 			createParentDirs(destination);
+			URI uri;
 
-			fsToClose = FileSystemReference.openJar(destination, true);
-			if (fsToClose.isReadOnly()) throw new IOException("the jar file "+destination+" can't be written");
+			try {
+				uri = new URI("jar:"+destination.toUri().toString());
+			} catch (URISyntaxException e) {
+				throw new RuntimeException(e);
+			}
 
-			destination = fsToClose.getPath("/");
+			Map<String, String> env = new HashMap<>();
+			env.put("create", "true");
+
+			FileSystem fs = FileSystems.newFileSystem(uri, env);
+			if (fs.isReadOnly()) throw new IOException("the jar file "+destination+" can't be written");
+
+			destination = fs.getPath("/");
 		}
 
 		this.dstDir = destination;
+		this.closeFs = isJar && !keepFsOpen;
 		this.isJarFs = isJar;
 		this.lock = threadSyncWrites ? new ReentrantLock() : null;
 		this.classNameFilter = classNameFilter;
@@ -209,8 +222,8 @@ public class OutputConsumerPath implements BiConsumer<String, byte[]>, Closeable
 		try {
 			if (lock != null) lock.lock();
 
-			if (fsToClose != null) {
-				fsToClose.close();
+			if (closeFs) {
+				dstDir.getFileSystem().close();
 			}
 
 			closed = true;
@@ -237,7 +250,7 @@ public class OutputConsumerPath implements BiConsumer<String, byte[]>, Closeable
 	private static final String classSuffix = ".class";
 
 	private final Path dstDir;
-	private final FileSystemReference fsToClose;
+	private final boolean closeFs;
 	private final boolean isJarFs;
 	private final Lock lock;
 	private final Predicate<String> classNameFilter;

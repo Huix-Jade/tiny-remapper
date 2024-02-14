@@ -1,40 +1,43 @@
-/*
- * Copyright (c) 2016, 2018, Player, asie
- * Copyright (c) 2021, FabricMC
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-package net.fabricmc.tinyremapper;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.jar.JarFile;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
+import net.fabricmc.tinyremapper.BulkTest;
+import net.fabricmc.tinyremapper.InputTag;
+import net.fabricmc.tinyremapper.IntegrationTest1;
+import net.fabricmc.tinyremapper.IntegrationTest3;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-public class BulkTest {
+import net.fabricmc.tinyremapper.NonClassCopyMode;
+import net.fabricmc.tinyremapper.OutputConsumerPath;
+import net.fabricmc.tinyremapper.TestUtil;
+import net.fabricmc.tinyremapper.TinyRemapper;
+import net.fabricmc.tinyremapper.TinyUtils;
+
+public class Dpyq {
+	private static final String MAPPING_PATH = "/mite/mapping.tiny";
+	private static final String INPUT_PATH = "/mite/dpyq.jar";
+
 	@Test
 	public void fabricApi() throws IOException {
 		TinyRemapper remapper;
@@ -46,7 +49,7 @@ public class BulkTest {
 
 			Map<Path, InputTag> files = new HashMap<>();
 
-			try (ZipInputStream zis = new ZipInputStream(getInputStream("integration/bulk/fabric-api-0.35.1+1.17.jar"))) {
+			try (ZipInputStream zis = new ZipInputStream(getInputStream(INPUT_PATH))) {
 				ZipEntry entry;
 
 				while ((entry = zis.getNextEntry()) != null) {
@@ -77,13 +80,13 @@ public class BulkTest {
 	}
 
 	private static BufferedReader getMappingReader() throws IOException {
-		InputStream is = getInputStream("mapping/yarn-1.17+build.9-v2.tiny.gz");
+		InputStream is = getInputStream(MAPPING_PATH);
 
 		return new BufferedReader(new InputStreamReader(new GZIPInputStream(is), StandardCharsets.UTF_8));
 	}
 
 	private static InputStream getInputStream(String file) {
-		return BulkTest.class.getClassLoader().getResourceAsStream(file);
+		return Dpyq.class.getClassLoader().getResourceAsStream(file);
 	}
 
 	@TempDir

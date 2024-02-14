@@ -53,7 +53,7 @@ public class MetaInfFixer implements OutputConsumerPath.ResourceRemapper {
 			Manifest manifest = new Manifest(input);
 			fixManifest(manifest, remapper);
 
-			Path outputFile = destinationDirectory.resolve(relativePath.toString());
+			Path outputFile = destinationDirectory.resolve(relativePath);
 			Path outputDir = outputFile.getParent();
 			if (outputDir != null) Files.createDirectories(outputDir);
 
@@ -61,7 +61,7 @@ public class MetaInfFixer implements OutputConsumerPath.ResourceRemapper {
 				manifest.write(os);
 			}
 		} else if (remapper != null && relativePath.getNameCount() == 3 && relativePath.getName(1).toString().equals("services")) {
-			Path outputDir = destinationDirectory.resolve(relativePath.toString()).getParent();
+			Path outputDir = destinationDirectory.resolve(relativePath).getParent();
 			Files.createDirectories(outputDir);
 			Path outputFile = outputDir.resolve(mapFullyQualifiedClassName(fileName, remapper));
 
@@ -83,7 +83,6 @@ public class MetaInfFixer implements OutputConsumerPath.ResourceRemapper {
 		return fileName.endsWith(".SF")
 				|| fileName.endsWith(".DSA")
 				|| fileName.endsWith(".RSA")
-				|| fileName.endsWith(".EC")
 				|| fileName.startsWith("SIG-");
 	}
 

@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016, 2018, Player, asie
- * Copyright (c) 2016, 2023, FabricMC
+ * Copyright (c) 2016, 2021, FabricMC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -20,10 +20,8 @@ package net.fabricmc.tinyremapper;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileInputStream;
+import java.io.FileReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -36,19 +34,19 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import net.fabricmc.tinyremapper.TinyRemapper.LinkedMethodPropagation;
+import net.fabricmc.tinyremapper.extension.autoremap.AutoObfuscateExtension;
 import net.fabricmc.tinyremapper.extension.mixin.MixinExtension;
 
 public class Main {
 	public static void main(String[] rawArgs) {
-		List<String> args = new ArrayList<String>(rawArgs.length);
+		List<String> args = new ArrayList<>(rawArgs.length);
+		List<String> additionalMappings = new ArrayList<>();
 		boolean ignoreFieldDesc = false;
 		boolean propagatePrivate = false;
 		LinkedMethodPropagation propagateBridges = LinkedMethodPropagation.DISABLED;
 		boolean removeFrames = false;
 		Set<String> forcePropagation = Collections.emptySet();
 		File forcePropagationFile = null;
-		Set<String> knownIndyBsm = new HashSet<>();
-		File knownIndyBsmFile = null;
 		boolean ignoreConflicts = false;
 		boolean checkPackageAccess = false;
 		boolean fixPackageAccess = false;
@@ -56,10 +54,14 @@ public class Main {
 		boolean rebuildSourceFilenames = false;
 		boolean skipLocalVariableMapping = false;
 		boolean renameInvalidLocals = false;
+		boolean autoObfuscate = false;
 		Pattern invalidLvNamePattern = null;
 		NonClassCopyMode ncCopyMode = NonClassCopyMode.FIX_META_INF;
 		int threads = -1;
 		boolean enableMixin = false;
+		List<String> autoObfFilter = new ArrayList<>();
+		String autoObfPrefix = "net/minecraft/";
+		File autoObfOutputFile = null;
 
 		for (String arg : rawArgs) {
 			if (arg.startsWith("--")) {
@@ -75,8 +77,6 @@ public class Main {
 				case "forcepropagation":
 					forcePropagationFile = new File(arg.substring(valueSepPos + 1));
 					break;
-				case "knownindybsm":
-					knownIndyBsmFile = new File(arg.substring(valueSepPos + 1));
 				case "propagateprivate":
 					propagatePrivate = true;
 					break;
@@ -114,6 +114,21 @@ public class Main {
 					break;
 				case "renameinvalidlocals":
 					renameInvalidLocals = true;
+					break;
+				case "autoobfuscate":
+					autoObfuscate = true;
+					break;
+				case "autoobfuscateoutput":
+					autoObfOutputFile = new File(arg.substring(valueSepPos + 1));
+					break;
+				case "autoobffilter":
+					autoObfFilter.add(arg.substring(valueSepPos + 1));
+					break;
+				case "autoobfprefix":
+					autoObfPrefix = arg.substring(valueSepPos + 1);
+					break;
+				case "additionalmapping":
+					additionalMappings.add(arg.substring(valueSepPos + 1));
 					break;
 				case "invalidlvnamepattern":
 					invalidLvNamePattern = Pattern.compile(arg.substring(valueSepPos + 1));
@@ -169,6 +184,13 @@ public class Main {
 			System.out.println("Can't read mappings file "+mappings+".");
 			System.exit(1);
 		}
+		for (String additionalMapping : additionalMappings) {
+			Path file = new File(additionalMapping).toPath();
+			if (!Files.isReadable(file) || Files.isDirectory(file)) {
+				System.out.println("Can't read mappings file "+file+".");
+				System.exit(1);
+			}
+		}
 
 		String fromM = args.get(3);
 		String toM = args.get(4);
@@ -192,7 +214,7 @@ public class Main {
 				System.exit(1);
 			}
 
-			try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(forcePropagationFile), StandardCharsets.UTF_8))) {
+			try (BufferedReader reader = new BufferedReader(new FileReader(forcePropagationFile))) {
 				String line;
 
 				while ((line = reader.readLine()) != null) {
@@ -208,35 +230,12 @@ public class Main {
 			}
 		}
 
-		if (knownIndyBsmFile != null) {
-			if (!knownIndyBsmFile.canRead()) {
-				System.out.println("Can't read knownIndyBsm file "+knownIndyBsmFile+".");
-				System.exit(1);
-			}
-
-			try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(knownIndyBsmFile), StandardCharsets.UTF_8))) {
-				String line;
-
-				while ((line = reader.readLine()) != null) {
-					line = line.trim();
-
-					if (line.isEmpty() || line.charAt(0) == '#') continue;
-
-					knownIndyBsm.add(line);
-				}
-			} catch (IOException e) {
-				e.printStackTrace();
-				System.exit(1);
-			}
-		}
-
 		long startTime = System.nanoTime();
 
 		TinyRemapper.Builder builder = TinyRemapper.newRemapper()
 				.withMappings(TinyUtils.createTinyMappingProvider(mappings, fromM, toM))
 				.ignoreFieldDesc(ignoreFieldDesc)
 				.withForcedPropagation(forcePropagation)
-				.withKnownIndyBsm(knownIndyBsm)
 				.propagatePrivate(propagatePrivate)
 				.propagateBridges(propagateBridges)
 				.removeFrames(removeFrames)
@@ -250,8 +249,19 @@ public class Main {
 				.invalidLvNamePattern(invalidLvNamePattern)
 				.threads(threads);
 
+		for (String additionalMapping : additionalMappings) {
+			builder.withMappings(TinyUtils.createTinyMappingProvider(Paths.get(additionalMapping),fromM,toM));
+		}
 		if (enableMixin) {
 			builder = builder.extension(new MixinExtension());
+		}
+
+		if (autoObfuscate){
+			AutoObfuscateExtension extension = new AutoObfuscateExtension(autoObfPrefix, autoObfFilter);
+			if (autoObfOutputFile != null){
+				extension.setOutputFile(autoObfOutputFile);
+			}
+			builder.extension(extension);
 		}
 
 		TinyRemapper remapper = builder.build();
